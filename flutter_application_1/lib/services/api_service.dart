@@ -1,14 +1,26 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+
+// IP de tu PC en la red WiFi local. Cámbiala antes de compilar el APK.
+// En Windows: ejecuta `ipconfig` y busca "Dirección IPv4" (ej. 192.168.1.X)
+// El backend debe correr con: uvicorn app:app --host 0.0.0.0 --port 8000
+const String _localBackendIp = '192.168.1.70';
 
 class ApiService {
-  // Web, desktop e iOS simulator usan localhost; Android emulator usa 10.0.2.2.
   static String get baseUrl {
     if (kIsWeb) return 'http://localhost:8000';
 
+    // Emulador Android usa 10.0.2.2 para acceder al localhost del PC.
+    // Dispositivo físico usa la IP real de tu PC en la misma red WiFi.
     if (defaultTargetPlatform == TargetPlatform.android) {
-      return 'http://10.0.2.2:8000';
+      const isEmulator =
+          bool.fromEnvironment('IS_EMULATOR', defaultValue: false);
+      return isEmulator
+          ? 'http://10.0.2.2:8000'
+          : 'http://$_localBackendIp:8000';
     }
 
     return 'http://localhost:8000';
@@ -99,6 +111,26 @@ class ApiService {
   }
 
   // =======================
+  // DESCARGAR PDF AL DISPOSITIVO
+  // =======================
+  static Future<String?> downloadPdf(String filename) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/vouchers/$filename'),
+      );
+      if (response.statusCode == 200) {
+        final dir = await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}/$filename');
+        await file.writeAsBytes(response.bodyBytes);
+        return file.path;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // =======================
   // HELPERS DE PARSEO
   // =======================
   static List<Map<String, dynamic>> _parseAccounts(String text) {
@@ -113,9 +145,8 @@ class ApiService {
       if (l.startsWith('Producto:')) {
         tipo = l.replaceFirst('Producto:', '').trim();
       } else if (l.startsWith('Saldo:')) {
-        final raw = l
-            .replaceFirst('Saldo:', '')
-            .replaceAll(RegExp(r'[^\d.]'), '');
+        final raw =
+            l.replaceFirst('Saldo:', '').replaceAll(RegExp(r'[^\d.]'), '');
         saldo = double.tryParse(raw);
       }
       if (tipo != null && saldo != null) {

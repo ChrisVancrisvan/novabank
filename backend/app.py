@@ -1,6 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+import os
 import re
 
 from llm_engine import generate_response
@@ -265,6 +267,14 @@ CLUSTER_VOICES = {
 @app.get("/")
 def root():
     return {"message": "NovaBank AI funcionando"}
+
+
+@app.get("/vouchers/{filename}")
+def download_voucher(filename: str):
+    filepath = os.path.join("vouchers", filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Comprobante no encontrado")
+    return FileResponse(filepath, media_type="application/pdf", filename=filename)
 
 
 def _response(user_id, intent, message, bot_response):

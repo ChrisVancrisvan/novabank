@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:open_file/open_file.dart';
 import '../services/api_service.dart';
 
 class ChatMessage {
   final String text;
   final bool isUser;
   final DateTime time;
+  final String? pdfFilename;
 
   ChatMessage({
     required this.text,
     required this.isUser,
     required this.time,
+    this.pdfFilename,
   });
 }
 
@@ -78,12 +81,16 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final response = await ApiService.sendMessage(widget.userId, text);
 
+    // Detectar si la respuesta incluye un comprobante PDF
+    final pdfMatch = RegExp(r'vouchers/(\S+\.pdf)').firstMatch(response);
+
     setState(() {
       _messages.add(
         ChatMessage(
           text: response,
           isUser: false,
           time: DateTime.now(),
+          pdfFilename: pdfMatch?.group(1),
         ),
       );
 
@@ -380,6 +387,10 @@ class _MessageBubble extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (message.pdfFilename != null) ...[
+                  const SizedBox(height: 8),
+                  _PdfDownloadButton(filename: message.pdfFilename!),
+                ],
                 const SizedBox(height: 4),
                 Text(
                   time,
@@ -395,6 +406,93 @@ class _MessageBubble extends StatelessWidget {
         ],
       ),
     ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.1);
+  }
+}
+
+// =========================
+// BOTÓN DESCARGA PDF
+// =========================
+
+class _PdfDownloadButton extends StatefulWidget {
+  final String filename;
+
+  const _PdfDownloadButton({required this.filename});
+
+  @override
+  State<_PdfDownloadButton> createState() => _PdfDownloadButtonState();
+}
+
+class _PdfDownloadButtonState extends State<_PdfDownloadButton> {
+  bool _loading = false;
+  bool _done = false;
+  String? _savedPath;
+
+  Future<void> _download() async {
+    setState(() => _loading = true);
+    final path = await ApiService.downloadPdf(widget.filename);
+    setState(() {
+      _loading = false;
+      _done = path != null;
+      _savedPath = path;
+    });
+    if (path == null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo descargar el comprobante')),
+      );
+    }
+  }
+
+  Future<void> _open() async {
+    if (_savedPath != null) await OpenFile.open(_savedPath!);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: _done ? _open : (_loading ? null : _download),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF4F46E5), Color(0xFF7C3AED)],
+          ),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_loading)
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            else
+              Icon(
+                _done ? Icons.picture_as_pdf_rounded : Icons.download_rounded,
+                color: Colors.white,
+                size: 16,
+              ),
+            const SizedBox(width: 8),
+            Text(
+              _loading
+                  ? 'Descargando...'
+                  : _done
+                      ? 'Abrir comprobante'
+                      : 'Descargar comprobante',
+              style: GoogleFonts.inter(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
