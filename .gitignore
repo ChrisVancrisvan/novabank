@@ -16,3 +16,7 @@ build/
 .vscode/
 
 data/
+
+data.zip
+
+backend/vouchers/

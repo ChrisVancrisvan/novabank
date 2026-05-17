@@ -118,8 +118,9 @@ ACCOUNT_ALIASES = {
 
 
 def get_product_info(tipo_producto):
+    tipo_producto = str(tipo_producto).strip().lower()
     return PRODUCT_CATALOG.get(
-        str(tipo_producto).lower(),
+        tipo_producto,
         {
             "nombre": str(tipo_producto).replace("_", " ").title(),
             "descripcion": "Producto bancario.",
@@ -145,20 +146,20 @@ def _to_float(value):
 
 
 def _is_active(account):
-    return str(account.get("estatus", "")).lower() == "activo"
+    return str(account.get("estatus", "")).strip().lower() == "activo"
 
 
 def _account_payload(row):
-    tipo_producto = str(row["tipo_producto"])
+    tipo_producto = str(row["tipo_producto"]).strip()
     info = get_product_info(tipo_producto)
     return {
-        "producto_id": str(row["producto_id"]),
-        "user_id": str(row["user_id"]),
+        "producto_id": str(row["producto_id"]).strip(),
+        "user_id": str(row["user_id"]).strip(),
         "tipo_producto": tipo_producto,
         "nombre_producto": info["nombre"],
         "descripcion_producto": info["descripcion"],
         "saldo_actual": float(row["saldo_actual"]),
-        "estatus": str(row["estatus"]),
+        "estatus": str(row["estatus"]).strip(),
         "limite_credito": _to_float(row.get("limite_credito")),
         "utilizacion_pct": _to_float(row.get("utilizacion_pct")),
         "tasa_interes_anual": _to_float(row.get("tasa_interes_anual")),
@@ -176,14 +177,14 @@ def _find_account(user_accounts, account_reference, capability=None):
     normalized = normalize_account_reference(account_reference)
 
     for acc in user_accounts:
-        if acc["producto_id"].lower() == normalized:
+        if acc["producto_id"].strip().lower() == normalized:
             if capability is None or acc.get(capability):
                 return acc
 
     matches = [
         acc
         for acc in user_accounts
-        if acc["tipo_producto"].lower() == normalized
+        if acc["tipo_producto"].strip().lower() == normalized
         and (capability is None or acc.get(capability))
     ]
 

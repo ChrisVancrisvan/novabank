@@ -13,6 +13,7 @@ from finance_engine import (
     get_operation_accounts,
     transfer_between_accounts,
     recharge_phone,
+    normalize_account_reference,
 )
 from conversation_memory import conversation_memory
 from pdf_engine import (
@@ -76,6 +77,190 @@ CLUSTER_TONES = {
     },
 }
 
+# Instrucciones de escritura concretas para el LLM, por cluster
+CLUSTER_LLM_STYLE = {
+    0: (
+        "Redacta en tono ejecutivo y formal. "
+        "Trata al cliente de 'usted'. "
+        "Frases cortas y directas. "
+        "Vocabulario: 'le informamos', 'ha sido registrado', 'quedo a sus ordenes'. "
+        "Usa unicamente los emojis ✅ o 💼 si aportan claridad; ningun otro."
+    ),
+    1: (
+        "Redacta en tono amigable, paciente y motivador. "
+        "Trata al cliente de 'tu'. "
+        "Frases sencillas con ejemplos concretos. "
+        "Vocabulario: '¡listo!', '¡ya quedo!', '¡genial!', 'cuando quieras'. "
+        "Incluye emojis como 😊 💸 🎉 ✨ para dar calidez a la respuesta."
+    ),
+    2: (
+        "Redacta en tono preciso, tecnico y orientado a datos. "
+        "Trata al cliente de 'usted'. "
+        "Frases directas sin adornos. "
+        "Vocabulario: 'registrado', 'monto exacto', 'periodo analizado', 'sin cambios'. "
+        "Sin emojis innecesarios; usa unicamente ✔ si es util."
+    ),
+    3: (
+        "Redacta en tono casual, energico y cercano. "
+        "Trata al cliente de 'tu'. "
+        "Frases cortas y dinamicas. "
+        "Vocabulario: '¡orale!', '¡ya mero!', 'echarle la mano', '¡que onda!'. "
+        "Incluye emojis como 🚀 💸 🙌 🎉 para dar energia y dinamismo."
+    ),
+}
+
+# Textos y emojis diferenciados por cluster para respuestas directas (no LLM)
+CLUSTER_VOICES = {
+    0: {  # Premium: formal, ejecutivo, sin exceso de emojis
+        "done_transfer": "Transferencia ejecutada exitosamente. ✅",
+        "done_recharge": "Recarga procesada correctamente. ✅",
+        "done_transfer_extra": "La operación quedó registrada en su historial.",
+        "ask_amount_transfer": "¿Cuál es el monto que desea transferir?",
+        "ask_from": "¿Desde qué cuenta desea originar el movimiento?",
+        "ask_to": "¿Hacia qué cuenta desea dirigir la transferencia?",
+        "ask_phone": "¿A qué número de 10 dígitos desea realizar la recarga?",
+        "ask_recharge_amount": "¿Por qué monto desea recargar?",
+        "accounts_intro_source": "Cuentas disponibles como origen:",
+        "accounts_intro_target": "Cuentas disponibles como destino:",
+        "cancel": "Entendido. El flujo fue cancelado. Quedo a sus órdenes para lo que necesite.",
+        "default": (
+            "Puedo asistirle con consultas de saldo, movimientos, gastos, "
+            "cashback, promociones, transferencias y recargas."
+        ),
+        "saldo_intro": "Aquí tiene el resumen de sus productos.",
+        "saldo_closing": "Para operar un producto específico, indique el tipo o su ID.",
+        "cashback": lambda ctx: (
+            f"Su cashback acumulado es de ${ctx['cashback']:,.2f} MXN. 💼 "
+            f"Por su perfil {ctx['segment']}, le recomendamos aplicarlo en {ctx['categoria']}."
+        ),
+        "retry_abort": (
+            "Para garantizar la seguridad de la operación, pausé el proceso. "
+            "Puede iniciarlo nuevamente indicando monto, cuenta origen y cuenta destino."
+        ),
+        "retry_abort_recharge": (
+            "Para evitar errores, pausé la recarga. "
+            "Por favor intente de nuevo con un número de 10 dígitos y el monto deseado."
+        ),
+        "saludo": "Bienvenido a NovaBank AI. ¿En qué puedo asistirle hoy?",
+        "movimientos_intro": lambda n: f"Sus últimos {n} movimiento{'s' if n != 1 else ''} registrado{'s' if n != 1 else ''}:",
+        "movimientos_closing": "Para mayor detalle, consulte su estado de cuenta.",
+        "ok": "✅",
+        "money_emoji": "💼",
+        "phone_emoji": "📱",
+    },
+    1: {  # Ocasional: amigable, paciente, con emojis de apoyo
+        "done_transfer": "¡Tu transferencia quedó lista! 🎉",
+        "done_recharge": "¡Recarga realizada con éxito! 📱✨",
+        "done_transfer_extra": "¡Recuerda que puedes revisar tus movimientos cuando quieras! 😊",
+        "ask_amount_transfer": "¿Cuánto quieres transferir? 💸 (Ejemplo: 500 o $1,200)",
+        "ask_from": "¿Desde cuál de tus cuentas quieres mandar el dinero? 💳",
+        "ask_to": "¿Y a cuál cuenta se lo enviamos? 📤",
+        "ask_phone": "¿A qué número de celular (10 dígitos) quieres recargar? 📱",
+        "ask_recharge_amount": "¿Cuánto quieres poner de saldo? 💵",
+        "accounts_intro_source": "Estas son tus cuentas disponibles 👇",
+        "accounts_intro_target": "Puedes enviarlo a cualquiera de estas cuentas 👇",
+        "cancel": "¡Sin problema! Cancelé todo 😊 Cuando quieras, dime qué necesitas.",
+        "default": (
+            "Puedo ayudarte con tu saldo, movimientos, gastos, cashback, "
+            "promociones, transferencias y recargas. ¿Con qué empezamos? 😊"
+        ),
+        "saldo_intro": "¡Aquí están todas tus cuentas! 😊",
+        "saldo_closing": "¿Quieres hacer algo con alguna? Solo dime el tipo o el ID 👆",
+        "cashback": lambda ctx: (
+            f"¡Tienes ${ctx['cashback']:,.2f} MXN de cashback acumulado! ✨ "
+            f"Como cliente {ctx['segment']}, te conviene usarlo en {ctx['categoria']} 😊"
+        ),
+        "retry_abort": (
+            "¡Uy, algo salió mal con varios intentos! 😅 Pausé la transferencia para evitar errores. "
+            "Inténtala de nuevo indicando el monto, tu cuenta de origen y la cuenta destino."
+        ),
+        "retry_abort_recharge": (
+            "¡Ups! Pausé la recarga por seguridad 😅 "
+            "Inténtala de nuevo con el número de 10 dígitos y el monto."
+        ),
+        "saludo": "¡Hola! 😊 Me da gusto saludarte. Soy NovaBank AI, estoy aquí para ayudarte. ¿Con qué empezamos?",
+        "movimientos_intro": lambda n: f"¡Aquí están tus últimos {n} movimiento{'s' if n != 1 else ''}! 😊",
+        "movimientos_closing": "¿Ves algo que no reconoces? Puedo ayudarte a aclararlo 💬",
+        "ok": "✅",
+        "money_emoji": "💵",
+        "phone_emoji": "📱",
+    },
+    2: {  # Atípico: preciso, orientado a datos, control total
+        "done_transfer": "Movimiento ejecutado. ✔",
+        "done_recharge": "Recarga registrada. ✔",
+        "done_transfer_extra": "Registrado como movimiento de transferencia para su control.",
+        "ask_amount_transfer": "Indique el monto exacto de la transferencia.",
+        "ask_from": "¿Cuál es la cuenta de origen para el cargo?",
+        "ask_to": "¿Cuál es la cuenta destino para el abono?",
+        "ask_phone": "Proporcione el número de 10 dígitos para la recarga.",
+        "ask_recharge_amount": "Indique el monto de la recarga.",
+        "accounts_intro_source": "Cuentas habilitadas como origen:",
+        "accounts_intro_target": "Cuentas habilitadas como destino:",
+        "cancel": "Operación cancelada. No se registraron cambios.",
+        "default": (
+            "Puedo apoyarle con consulta de saldos, movimientos, gastos por periodo, "
+            "cashback, promociones, transferencias y recargas."
+        ),
+        "saldo_intro": "Resumen de sus productos activos:",
+        "saldo_closing": "Para operar, indique el tipo de producto o su ID.",
+        "cashback": lambda ctx: (
+            f"Cashback acumulado: ${ctx['cashback']:,.2f} MXN. 📊 "
+            f"Perfil: {ctx['segment']}. Categoría sugerida: {ctx['categoria']}."
+        ),
+        "retry_abort": (
+            "Pausé el proceso por exceso de intentos. "
+            "Inicie nuevamente indicando monto, cuenta origen y cuenta destino."
+        ),
+        "retry_abort_recharge": (
+            "Pausé la recarga por exceso de intentos. "
+            "Indique número de 10 dígitos y monto para reiniciar."
+        ),
+        "saludo": "Hola. Soy NovaBank AI. ¿Con qué operación le puedo apoyar hoy?",
+        "movimientos_intro": lambda n: f"Registro: últimos {n} movimiento{'s' if n != 1 else ''}.",
+        "movimientos_closing": "Para análisis por periodo, use 'consultar gastos'.",
+        "ok": "✔",
+        "money_emoji": "📊",
+        "phone_emoji": "📲",
+    },
+    3: {  # Frecuente Estándar: casual, ágil, con energía
+        "done_transfer": "¡Transferencia lista! 🚀",
+        "done_recharge": "¡Saldo cargado al celu! 📱🔋",
+        "done_transfer_extra": "¡Tus saldos ya se actualizaron! 🙌",
+        "ask_amount_transfer": "¿Cuánto le mandas? 💸",
+        "ask_from": "¿De cuál de tus cuentas sale el dinero? 💳",
+        "ask_to": "¿Y a cuál le llega? 👇",
+        "ask_phone": "¿A qué celu (10 dígitos) le ponemos saldo? 📱",
+        "ask_recharge_amount": "¿Cuánto le echamos de saldo? 💰",
+        "accounts_intro_source": "Tus cuentas disponibles 👇",
+        "accounts_intro_target": "¿A cuál le llega? Elige una 👇",
+        "cancel": "¡Órale, cancelé todo! 👌 Cuando quieras volvemos a intentarlo.",
+        "default": (
+            "Te puedo echar la mano con saldo, movimientos, gastos, cashback, "
+            "promos, transferencias y recargas. ¿Qué necesitas? 🙌"
+        ),
+        "saldo_intro": "¡Aquí van todos tus productos! 👛",
+        "saldo_closing": "Dime cuál quieres usar, con el tipo o el ID 💳",
+        "cashback": lambda ctx: (
+            f"¡Llevas ${ctx['cashback']:,.2f} MXN de cashback acumulado! 🎉 "
+            f"Con tu perfil {ctx['segment']}, el mayor retorno está en {ctx['categoria']} 💰"
+        ),
+        "retry_abort": (
+            "¡Demasiados intentos! 😬 Pausé la transferencia. "
+            "Vuélvela a intentar indicando monto, cuenta origen y cuenta destino."
+        ),
+        "retry_abort_recharge": (
+            "¡Pausé la recarga! 🔄 "
+            "Inténtala de nuevo con el número de 10 dígitos y el monto."
+        ),
+        "saludo": "¡Hola! 👋 ¿Qué onda? Soy NovaBank AI, dime en qué te echo la mano 🚀",
+        "movimientos_intro": lambda n: f"Tus últimos {n} movimiento{'s' if n != 1 else ''} 👇",
+        "movimientos_closing": "¿Ves algo raro? Cuéntame y lo revisamos 🙌",
+        "ok": "✅",
+        "money_emoji": "💸",
+        "phone_emoji": "📱",
+    },
+}
+
 
 @app.get("/")
 def root():
@@ -93,7 +278,8 @@ def _response(user_id, intent, message, bot_response):
 
 def _load_user_context(user_id):
     user_data = get_user_data(user_id) or {}
-    cluster = int(user_data.get("cluster", 3) or 3)
+    raw_cluster = user_data.get("cluster")
+    cluster = int(raw_cluster) if raw_cluster is not None else 3
     profile = CLUSTER_TONES.get(cluster, CLUSTER_TONES[3])
     return {
         "data": user_data,
@@ -106,6 +292,10 @@ def _load_user_context(user_id):
         "gasto_promedio": float(user_data.get("gasto_promedio", 0) or 0),
         "num_transacciones": int(user_data.get("num_transacciones", 0) or 0),
     }
+
+
+def _voice(ctx):
+    return CLUSTER_VOICES.get(ctx["cluster"], CLUSTER_VOICES[3])
 
 
 def _profile_block(ctx):
@@ -123,10 +313,14 @@ def _profile_block(ctx):
 
 
 def _personalized_prompt(ctx, message, real_data, instructions):
+    style = CLUSTER_LLM_STYLE.get(ctx["cluster"], CLUSTER_LLM_STYLE[3])
     return f"""
     Eres NovaBank AI, asistente bancario conversacional.
 
     {_profile_block(ctx)}
+
+    ESTILO DE ESCRITURA OBLIGATORIO (cluster {ctx['cluster']} - {ctx['segment']}):
+    {style}
 
     MENSAJE DEL CLIENTE:
     "{message}"
@@ -135,8 +329,7 @@ def _personalized_prompt(ctx, message, real_data, instructions):
     {real_data}
 
     REGLAS:
-    - Responde en espanol mexicano, natural y breve.
-    - Usa el perfil para ajustar tono y relevancia.
+    - Responde en espanol mexicano siguiendo EXACTAMENTE el estilo de escritura indicado arriba.
     - No mezcles temas: contesta solo la intencion actual.
     - No inventes datos, saldos, folios, fechas, beneficios ni comisiones.
     - Si falta un dato, pide solo ese dato.
@@ -148,10 +341,12 @@ def _personalized_prompt(ctx, message, real_data, instructions):
 
 
 def _first_number(text):
-    match = re.search(r"\d+(?:[.,]\d+)?", text)
+    # Limpiar símbolo de peso y comas de miles para no alterar el monto
+    text_clean = text.replace("$", "").replace(",", "")
+    match = re.search(r"\d+(?:\.\d+)?", text_clean)
     if not match:
         return None
-    return float(match.group(0).replace(",", "."))
+    return float(match.group(0))
 
 
 def _digits_only(text):
@@ -160,67 +355,57 @@ def _digits_only(text):
 
 def _normalize_account(text):
     value = text.strip().lower()
-    aliases = {
+    keywords = {
         "debito": "debito",
         "débito": "debito",
-        "cuenta debito": "debito",
-        "cuenta de debito": "debito",
         "inversion": "inversion",
         "inversión": "inversion",
-        "hey inversion": "inversion",
         "negocio": "negocios",
         "negocios": "negocios",
-        "cuenta negocio": "negocios",
         "credito": "credito",
         "crédito": "credito",
-        "tarjeta credito": "credito",
     }
-    return aliases.get(value, value)
+
+    for word, alias in keywords.items():
+        if re.search(rf"\b{word}\b", value):
+            return alias
+
+    prd_match = re.search(r"\bprd-\d+\b", value)
+    if prd_match:
+        return prd_match.group(0)
+
+    match = re.search(r"\b\d+\b", value)
+    if match:
+        return match.group(0)
+
+    return value
 
 
 def _format_money(value):
     return f"${float(value):,.2f} MXN"
 
 
-def _format_account_line(account, include_capabilities=False):
-    line = (
-        f"- {account['nombre_producto']} ({account['tipo_producto']}, "
-        f"ID {account['producto_id']}): {_format_money(account['saldo_actual'])} "
-        f"[{account['estatus']}]"
-    )
-
-    details = []
-    if account.get("limite_credito") is not None:
-        details.append(f"limite {_format_money(account['limite_credito'])}")
-    if account.get("monto_mensualidad") is not None:
-        details.append(f"mensualidad {_format_money(account['monto_mensualidad'])}")
-    if account.get("tasa_interes_anual") is not None:
-        details.append(f"tasa {account['tasa_interes_anual']:.2f}%")
-    if details:
-        line += " | " + ", ".join(details)
-
-    if include_capabilities:
-        capabilities = []
-        if account.get("can_transfer_from"):
-            capabilities.append("origen transferencia")
-        if account.get("can_transfer_to"):
-            capabilities.append("destino/pago")
-        if account.get("can_recharge_from"):
-            capabilities.append("recarga")
-        line += " | disponible para: " + (
-            ", ".join(capabilities) if capabilities else "consulta solamente"
-        )
-
+def _format_account_line(account, show_balance=False):
+    line = f"- {account['nombre_producto']} (ID: {account['producto_id']})"
+    if show_balance:
+        line += f" — Saldo: {_format_money(account['saldo_actual'])}"
     return line
 
 
-def _format_accounts(accounts, include_capabilities=False):
+def _format_accounts(accounts, show_balance=False):
     if not accounts:
         return "- No hay cuentas disponibles para esta operacion."
-    return "\n".join(
-        _format_account_line(account, include_capabilities)
-        for account in accounts
-    )
+    return "\n".join(_format_account_line(a, show_balance) for a in accounts)
+
+
+def _format_transactions(movements):
+    lines = []
+    for i, tx in enumerate(movements, 1):
+        fecha = str(tx["fecha"])[:10]
+        categoria = str(tx["categoria"]).replace("_", " ").title()
+        monto = _format_money(tx["monto"])
+        lines.append(f"{i}. {fecha} — {categoria}: {monto}")
+    return "\n".join(lines)
 
 
 def _bump_retry(memory, slot):
@@ -250,72 +435,75 @@ def _should_switch_topic(memory, detected_intent):
     return detected_intent in CLEAR_SWITCH_INTENTS or detected_intent in FLOW_INTENTS
 
 
-def _next_transfer_question(memory, user_id):
+def _next_transfer_question(memory, user_id, voice):
     if "amount" not in memory:
-        source_accounts = get_operation_accounts(user_id, "transfer_source")
-        return (
-            "Cuanto deseas transferir?\n\n"
-            "Cuentas disponibles como origen:\n"
-            f"{_format_accounts(source_accounts)}"
-        )
+        return voice["ask_amount_transfer"]
+
     if "from_account" not in memory:
         source_accounts = get_operation_accounts(user_id, "transfer_source")
         return (
-            "Desde que cuenta quieres transferir? Puedes decirme el tipo o el ID.\n\n"
-            "Cuentas disponibles como origen:\n"
-            f"{_format_accounts(source_accounts)}"
+            f"{voice['ask_from']}\n\n"
+            f"{voice['accounts_intro_source']}\n"
+            f"{_format_accounts(source_accounts, show_balance=True)}"
         )
+
     if "to_account" not in memory:
-        target_accounts = get_operation_accounts(user_id, "transfer_target")
+        selected_type = normalize_account_reference(memory["from_account"])
+        target_accounts = [
+            a for a in get_operation_accounts(user_id, "transfer_target")
+            if a["tipo_producto"].lower() != selected_type
+        ]
         return (
-            "A que cuenta destino quieres transferir? Puedes decirme el tipo o el ID.\n\n"
-            "Cuentas disponibles como destino/pago:\n"
+            f"{voice['ask_to']}\n\n"
+            f"{voice['accounts_intro_target']}\n"
             f"{_format_accounts(target_accounts)}"
         )
+
     return None
 
 
-def _next_recharge_question(memory, user_id):
+def _next_recharge_question(memory, user_id, voice):
     if "phone_number" not in memory:
         source_accounts = get_operation_accounts(user_id, "recharge_source")
         return (
-            "Que numero celular de 10 digitos quieres recargar?\n\n"
-            "La recarga puede salir de:\n"
+            f"{voice['ask_phone']}\n\n"
+            f"La recarga puede salir de:\n"
             f"{_format_accounts(source_accounts)}"
         )
     if "amount" not in memory:
-        source_accounts = get_operation_accounts(user_id, "recharge_source")
-        return (
-            "Cuanto quieres recargar?\n\n"
-            "Cuentas disponibles para pagar la recarga:\n"
-            f"{_format_accounts(source_accounts)}"
-        )
+        return voice["ask_recharge_amount"]
     return None
 
 
 def _apply_transfer_slots(memory, intent_data, message):
     pending = memory.get("pending_slot")
-    if intent_data.get("amount") is not None and "amount" not in memory:
-        memory["amount"] = float(intent_data["amount"])
-        _reset_retry(memory, "amount")
-    if intent_data.get("from_account") and "from_account" not in memory:
-        memory["from_account"] = _normalize_account(intent_data["from_account"])
-        _reset_retry(memory, "from_account")
-    if intent_data.get("to_account") and "to_account" not in memory:
-        memory["to_account"] = _normalize_account(intent_data["to_account"])
-        _reset_retry(memory, "to_account")
 
-    if pending == "amount" and "amount" not in memory:
-        amount = _first_number(message)
-        if amount is not None and amount > 0:
-            memory["amount"] = amount
+    if pending:
+        # Mid-flow: solo llenar el slot que se pidió explícitamente
+        if pending == "amount" and "amount" not in memory:
+            amount = _first_number(message)
+            if amount is not None and amount > 0:
+                memory["amount"] = amount
+                _reset_retry(memory, "amount")
+        elif pending == "from_account" and "from_account" not in memory:
+            memory["from_account"] = _normalize_account(message)
+            _reset_retry(memory, "from_account")
+        elif pending == "to_account" and "to_account" not in memory:
+            memory["to_account"] = _normalize_account(message)
+            _reset_retry(memory, "to_account")
+    else:
+        # Primer mensaje: extraer todos los slots disponibles del NLP
+        if intent_data.get("amount") is not None:
+            memory["amount"] = float(intent_data["amount"])
             _reset_retry(memory, "amount")
-    elif pending == "from_account" and "from_account" not in memory:
-        memory["from_account"] = _normalize_account(message)
-        _reset_retry(memory, "from_account")
-    elif pending == "to_account" and "to_account" not in memory:
-        memory["to_account"] = _normalize_account(message)
-        _reset_retry(memory, "to_account")
+        if intent_data.get("from_account"):
+            memory["from_account"] = _normalize_account(intent_data["from_account"])
+            _reset_retry(memory, "from_account")
+        if intent_data.get("to_account"):
+            to = _normalize_account(intent_data["to_account"])
+            if to != memory.get("from_account"):
+                memory["to_account"] = to
+                _reset_retry(memory, "to_account")
 
 
 def _apply_recharge_slots(memory, intent_data, message):
@@ -340,10 +528,11 @@ def _apply_recharge_slots(memory, intent_data, message):
 
 
 def _handle_transfer(user_id, message, intent_data, memory, ctx):
+    voice = _voice(ctx)
     memory["intent"] = "transferencia"
     _apply_transfer_slots(memory, intent_data, message)
 
-    missing_question = _next_transfer_question(memory, user_id)
+    missing_question = _next_transfer_question(memory, user_id, voice)
     if missing_question:
         slot = (
             "amount"
@@ -362,7 +551,7 @@ def _handle_transfer(user_id, message, intent_data, memory, ctx):
                 user_id,
                 "transferencia",
                 message,
-                "Para evitar errores, pause la transferencia. Puedes iniciarla otra vez con monto, cuenta origen y cuenta destino.",
+                voice["retry_abort"],
             )
 
         return _response(user_id, "transferencia", message, missing_question)
@@ -373,10 +562,33 @@ def _handle_transfer(user_id, message, intent_data, memory, ctx):
         memory["to_account"],
         memory["amount"],
     )
-    _clear(user_id)
 
     if "error" in transfer_result:
-        return _response(user_id, "transferencia", message, transfer_result["error"])
+        error_msg = transfer_result["error"]
+        # Errores recuperables: re-preguntar sin borrar toda la memoria
+        if "destino" in error_msg or "misma" in error_msg:
+            memory.pop("to_account", None)
+            memory.pop("pending_slot", None)
+            memory.setdefault("retries", {}).pop("to_account", None)
+            selected_type = normalize_account_reference(memory.get("from_account", ""))
+            target_accounts = [
+                a for a in get_operation_accounts(user_id, "transfer_target")
+                if a["tipo_producto"].lower() != selected_type
+            ]
+            prompt_msg = (
+                f"{error_msg}.\n\n"
+                f"{voice['ask_to']}\n\n"
+                f"{voice['accounts_intro_target']}\n"
+                f"{_format_accounts(target_accounts)}"
+            )
+            memory["pending_slot"] = "to_account"
+            _save(user_id, memory)
+            return _response(user_id, "transferencia", message, prompt_msg)
+        # Error no recuperable (ej. saldo insuficiente): cancelar flujo
+        _clear(user_id)
+        return _response(user_id, "transferencia", message, error_msg)
+
+    _clear(user_id)
 
     pdf_result = generate_transfer_pdf(
         user_id,
@@ -386,27 +598,30 @@ def _handle_transfer(user_id, message, intent_data, memory, ctx):
         transfer_result["new_source_balance"],
         transfer_result["new_target_balance"],
     )
+
+    ok = voice["ok"]
+    money_emoji = voice["money_emoji"]
     bot_response = (
-        f"Listo, transferencia realizada.\n\n"
-        f"Monto: ${memory['amount']:,.2f} MXN\n"
+        f"{voice['done_transfer']}\n\n"
+        f"{money_emoji} Monto: ${memory['amount']:,.2f} MXN\n"
         f"Origen: {transfer_result['from_account']} ({transfer_result['from_account_id']})\n"
         f"Destino: {transfer_result['to_account']} ({transfer_result['to_account_id']})\n"
-        f"Folio: {pdf_result['folio']}\n"
-        f"PDF: {pdf_result['pdf_path']}"
+        f"{ok} Folio: {pdf_result['folio']}\n"
+        f"Comprobante: {pdf_result['pdf_path']}\n\n"
+        f"{voice['done_transfer_extra']}"
     )
-    if ctx["cluster"] == 2:
-        bot_response += "\n\nLa registre como movimiento de transferencia para tu control."
     return _response(user_id, "transferencia", message, bot_response)
 
 
-def _handle_recharge(user_id, message, intent_data, memory):
+def _handle_recharge(user_id, message, intent_data, memory, ctx):
+    voice = _voice(ctx)
     memory["intent"] = "recarga_celular"
     _apply_recharge_slots(memory, intent_data, message)
 
     if "phone_number" in memory and len(memory["phone_number"]) != 10:
         memory.pop("phone_number", None)
 
-    missing_question = _next_recharge_question(memory, user_id)
+    missing_question = _next_recharge_question(memory, user_id, voice)
     if missing_question:
         slot = "phone_number" if "phone_number" not in memory else "amount"
         memory["pending_slot"] = slot
@@ -419,7 +634,7 @@ def _handle_recharge(user_id, message, intent_data, memory):
                 user_id,
                 "recarga_celular",
                 message,
-                "Pause la recarga para evitar errores. Intenta de nuevo con numero de 10 digitos y monto.",
+                voice["retry_abort_recharge"],
             )
 
         return _response(user_id, "recarga_celular", message, missing_question)
@@ -442,14 +657,16 @@ def _handle_recharge(user_id, message, intent_data, memory):
     )
     _clear(user_id)
 
+    ok = voice["ok"]
+    phone_emoji = voice["phone_emoji"]
     bot_response = (
-        f"Recarga realizada.\n\n"
-        f"Numero: {memory['phone_number']}\n"
-        f"Monto: ${memory['amount']:,.2f} MXN\n"
-        f"Cuenta origen: {recharge_result['source_account']} ({recharge_result['source_account_id']})\n"
-        f"Nuevo saldo: ${recharge_result['new_balance']:,.2f} MXN\n"
-        f"Folio: {pdf_result['folio']}\n"
-        f"PDF: {pdf_result['pdf_path']}"
+        f"{voice['done_recharge']}\n\n"
+        f"{phone_emoji} Número: {memory['phone_number']}\n"
+        f"Monto recargado: ${memory['amount']:,.2f} MXN\n"
+        f"Cuenta usada: {recharge_result['source_account']} ({recharge_result['source_account_id']})\n"
+        f"Saldo restante en cuenta: ${recharge_result['new_balance']:,.2f} MXN\n"
+        f"{ok} Folio: {pdf_result['folio']}\n"
+        f"Comprobante: {pdf_result['pdf_path']}"
     )
     return _response(user_id, "recarga_celular", message, bot_response)
 
@@ -460,16 +677,18 @@ def chat(request: ChatRequest):
     lowered = message.lower()
     user_id = request.user_id
 
+    ctx = _load_user_context(user_id)
+    voice = _voice(ctx)
+
     if lowered in CANCEL_WORDS:
         _clear(user_id)
         return _response(
             user_id,
             "cancelar",
             request.message,
-            "Listo, cancele el flujo actual. Dime que operacion quieres hacer ahora.",
+            voice["cancel"],
         )
 
-    ctx = _load_user_context(user_id)
     intent_data = detect_intent(message)
     intent = intent_data.get("intent", "desconocido")
     memory = conversation_memory.get(user_id, {})
@@ -484,7 +703,7 @@ def chat(request: ChatRequest):
         return _handle_transfer(user_id, request.message, intent_data, memory, ctx)
 
     if active_intent == "recarga_celular":
-        return _handle_recharge(user_id, request.message, intent_data, memory)
+        return _handle_recharge(user_id, request.message, intent_data, memory, ctx)
 
     _clear(user_id)
 
@@ -508,9 +727,9 @@ def chat(request: ChatRequest):
                 )
 
             bot_response = (
-                "Estos son todos tus productos:\n\n"
+                f"{voice['saldo_intro']}\n\n"
                 + "\n\n".join(account_blocks)
-                + "\n\nPara operar, dime el tipo o el ID del producto que quieres usar."
+                + f"\n\n{voice['saldo_closing']}"
             )
 
     elif intent == "consultar_gastos":
@@ -533,19 +752,17 @@ def chat(request: ChatRequest):
         limit = int(intent_data.get("limit", 5) or 5)
         limit = max(1, min(limit, 10))
         movements = get_last_transactions(user_id, limit)
-        prompt = _personalized_prompt(
-            ctx,
-            request.message,
-            f"Movimientos reales: {movements}",
-            "Muestra solo los movimientos en lista breve con fecha, categoria y monto. No recomiendes ni analices habitos.",
-        )
-        bot_response = generate_response(prompt)
+        if not movements:
+            bot_response = "No encontré movimientos recientes."
+        else:
+            bot_response = (
+                f"{voice['movimientos_intro'](len(movements))}\n\n"
+                f"{_format_transactions(movements)}\n\n"
+                f"{voice['movimientos_closing']}"
+            )
 
     elif intent == "consultar_cashback":
-        bot_response = (
-            f"Llevas ${ctx['cashback']:,.2f} MXN de cashback acumulado. "
-            f"Por tu perfil {ctx['segment']}, conviene enfocarlo en {ctx['categoria']}."
-        )
+        bot_response = voice["cashback"](ctx)
 
     elif intent == "recomendaciones":
         promo_data = get_promotions(ctx["data"])
@@ -565,11 +782,10 @@ def chat(request: ChatRequest):
                 )
                 bot_response = generate_response(prompt)
 
+    elif intent == "saludo":
+        bot_response = voice["saludo"]
+
     else:
-        bot_response = (
-            f"Puedo ayudarte con saldo, movimientos, gastos, cashback, promociones, "
-            f"transferencias y recargas. Para tu perfil {ctx['segment']}, tambien puedo "
-            f"priorizar recomendaciones de {ctx['categoria']}."
-        )
+        bot_response = voice["default"]
 
     return _response(user_id, intent, request.message, bot_response)
